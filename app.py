@@ -1,8 +1,10 @@
 from flask import Flask, render_template, request, jsonify, abort, g
 from flask_mongoengine import MongoEngine
-from passlib.apps import custom_app_context as pwd_context, hash
+from passlib.apps import custom_app_context as pwd_context
+from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import (TimedJSONWebSignatureSerializer as Serializer, BadSignature, SignatureExpired)
-from flask_httpauth import HTTPBasicAuth, md5
+from flask_httpauth import HTTPBasicAuth
+import sys
 
 # Create app
 app = Flask(__name__)
@@ -11,7 +13,7 @@ app.config['SECRET_KEY'] = 'super-secret'
 app.config['SECRET_REGISTERABLE'] = True
 
 #Hashing
-#app.config['SECURITY_PASSWORD_HASH'] = 'pbkdf2_sha512'
+app.config['SECURITY_PASSWORD_HASH'] = 'pbkdf2_sha512'
 #app.config['SECURITY_PASSWORD_SALT'] = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 
 # MongoDB Config
@@ -31,11 +33,11 @@ class User(db.Document):
     active = db.BooleanField(default=True)
 
 
-    def hash_password(self, password):
-        self.password = pwd_context.encrypt(password)
+    def hash_password(self, pw_plain):
+        self.password = pwd_context.encrypt(pw_plain)
 
-    def verify_password(self, password):
-        return pwd_context.verify(password, self.password)
+    def verify_password(self, pw_plain):
+        return pwd_context.verify(pw_plain, self.password)
 
     def generate_auth_token(self, expiration=600):
         s = Serializer(app.config['SECRET_KEY'], expires_in=expiration)
@@ -87,11 +89,11 @@ def sign_up():
     if User.objects(email__exact = email):
         return jsonify({"Error": "User exsits", "User": User.objects(email=email)}), 400
     user = User(name= name, surname= surname, email = email)
-    user.hash_password(password)
+    pw = user.hash_password(password)
     user.save()
 
     token = user.generate_auth_token()
-    return jsonify({ 'token': token.decode('ascii') }), 201
+    return jsonify({ 'token': token.decode('ascii')}), 201
 
 
 #TODO: fix login - verify password not working properly
@@ -100,15 +102,16 @@ def sign_in():
     data = request.get_json()
     email = data['email']
     password = data['password']
-    user = User(User.objects(email__exact = email))
+    user = User()
+    user = User.objects(email=email)[0]
     if user:
         if user.verify_password(password):
             token = user.generate_auth_token()
             return jsonify({ 'token': token.decode('ascii') }), 201
 
-    return jsonify({"Error": "Incorret credentials", "User": user}), 400
+    return jsonify({"Error": "Incorret credentials"}), 400
 
     
 
 if __name__ == '__main__':
-    app.run()
+    app.run(host='0.0.0.0')
