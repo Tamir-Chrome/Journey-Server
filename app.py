@@ -6,6 +6,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import (TimedJSONWebSignatureSerializer as Serializer, BadSignature, SignatureExpired)
 from flask_httpauth import HTTPBasicAuth
 import sys
+import json
 
 
 # Create app
@@ -27,64 +28,42 @@ app.config['MONGODB_PORT'] = 27017
 db = MongoEngine(app)
 auth = HTTPBasicAuth()
 
-db.user
 
-
-class AbstractHeader(db.EmbeddedDocument):
+class AbstracMedia(db.EmbeddedDocument):
     #header
-    creator = db.ReferenceField(User, required=True)
-    datetime = db.DateTimeField(required=True)
-    
-    likers = db.ListField(db.ReferenceField('User'))
+    creator = db.ReferenceField('User', required=True)
+    datetime = db.DateTimeField(required=False)
 
-    text = db.StringField()
+    meta = {'allow_inheritance': True}
 
-class Comment(AbstractHeader):
+class Comment(AbstracMedia):
     #header
+    text = db.StringField(required=True)
+    likers = db.EmbeddedDocumentListField(AbstracMedia)
 
-    #commenter = db.ReferenceField('User')
-    #content = db.StringField(required=True)
 
-    #info
-    
-    comments = db.ListField(db.ReferenceField('AbstractHeader'))
-    
-
-class Post(AbstractHeader):
+class Post(AbstracMedia):
     #header
-
-    action = db.StringField(required=True)
+    _id = db.ObjectIdField(required=True, default=lambda: ObjectId())
 
     #content
-    #text = db.StringField()
+    text = db.StringField()
     image = db.ImageField()
     loc = db.GeoPointField()
-    tags = db.ListField(StringField(max_length=30))
-
 
     #info
-
-    #likers = db.ListField(db.ReferenceField('User'))
-    sharers = db.ListField(db.ReferenceField('User'))
+    likers = db.EmbeddedDocumentListField(AbstracMedia)
     comments = db.EmbeddedDocumentListField(Comment)
 
-    
 
-    @property
-    def fullname(self):
-        return poster.name
 
     @property
     def profile_image(self):
-        return poster.profile_image
+        return creator.profile_image
 
     @property
     def likes(self):
         return len(likers)
-
-    @property
-    def shares(self):
-        return len(sharers)
 
     @property
     def comments(self):
@@ -100,11 +79,12 @@ class User(db.Document):
     email = db.StringField(max_length=128, unique=True)
     password = db.StringField(max_length=128)
     active = db.BooleanField(default=True)
-    friends = db.ListField(db.ReferenceField('User'))
+    folowing = db.ListField(db.ReferenceField('User'))
+    folowers = db.ListField(db.ReferenceField('User'))
     profile_image = db.ImageField()
     images = db.ListField(db.ImageField())
     posts = db.EmbeddedDocumentListField(Post)
-    new_posts = db.ListField(db.ReferenceField('Post'))
+    feed = db.ListField(db.ReferenceField('Post'))
 
 
 
@@ -132,41 +112,69 @@ class User(db.Document):
 
 @auth.verify_password
 def verify_password(email_or_token, password):
-    #print("Verifying... Token: " + email_or_token + " Pass: " + password, file = sys.stderr)
+    
     #try authenticate by token
     user = User.verify_auth_token(email_or_token)
     if not user:
         # try authenticate with username & password
-        user = User.objects(email=email_or_token)[0]
-        if not user or not user.verify_password(password):
+        users = User.objects(email=email_or_token)
+        if not users or not users[0].verify_password(password):
             return False
+        user = users[0]
     #user found
     g.user = user
     return True
 
-@app.route('/api/user/upload_post', methods = ['POST'])
+# [{"_id": ObjectID, "name": str}]
+@app.route('/api/search/<string:name_str>', methods = ['GET'])
+@auth.login_required
+def search_user():
+    return User.objects(name__icontains=name_str).only('_id','name')
+
+# {"post": post}
+@app.route('/api/user/upload_post', methods = ['POST']) 
 @auth.login_required
 def upload_post():
-    user = User(g.user)
-    post_data = request.get_json()
-
-    post = from_json(post_data)
-
-
-
-@app.route('/api/user/get_posts', methods = ['GET'])
-@auth.login_required
-def get_new_posts():
-    return jsonify(g.user.new_posts), 201
-
-@app.route('api/user/update_post', methods = ['PUT'])
-@auth.login_required
-def update_post():
     user = g.user
-    post_id = request.args.get('post_id')
+    
+    post_data = request.get_json()  
+    post = Post(**post_data) #
+    user.save() #validation
+    post.creator = user
+    user.posts.append(post)
+    user.save()
+
+    #add post to folowers
+    folowers = user.folowers
+    for folow in folowers:
+        folow.feed.append(post)
+
+    return jsonify({"post": post}), 201
+
+
+# {"posts": [post], "liked": [true/false]}
+@app.route('/api/user/get_posts/<int:sent_posts>', methods = ['GET'])
+@auth.login_required
+def get_feed():
+    user = g.user
+    #a chunk of 10 posts requested by client
+    start = sent_posts
+    end = sent_posts + 10
+    posts = user.feed.reverse()[start:end]
+    liked = [p.creator._id is user._id for p in posts]
+
+    return jsonify({"posts":posts, "liked":liked}), 201
+
+
+
+@app.route('/api/user/like_post', methods = ['PUT'])
+@auth.login_required
+def like_post():
+    user = g.user
+    post_id = ObjectId(request.args.get('post_id'))
     creator_id = request.args.get('user_id')
 
-    creator = User.objects(id=ObjectId(creator_id))[0]
+    creator = User.objects(_id=ObjectId(creator_id))[0]
     creator_posts = creator.posts[::-1]
 
     creator_post = Post()
@@ -175,7 +183,9 @@ def update_post():
             creator_post = post
             break
 
-    creator_post.likers.append(g.user.id)
+    creator_post.likers.append(user.id)
+    creator_post.save()
+    return 201
 
 @app.route('/api/users', methods = ['GET'])
 def get_users():
@@ -196,7 +206,7 @@ def sign_up():
     if User.objects(email__exact = email):
         return jsonify({"Error": "User exsits", "User": User.objects(email=email)}), 400
     user = User(name= name, email = email)
-    pw = user.hash_password(password)
+    user.hash_password(password)
     user.save()
 
     token = user.generate_auth_token()
