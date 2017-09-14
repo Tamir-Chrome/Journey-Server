@@ -214,20 +214,22 @@ def sign_up():
 
 
 @app.route('/api/login', methods = ['POST'])
+@auth.login_required
 def sign_in():
+    """
     data = request.get_json()
     email = data['email']
     password = data['password']
     user = User()
     user = User.objects(email=email)[0]
+    """
+    user = g.user
     if user:
-        if user.verify_password(password):
-            token = user.generate_auth_token()
-            return jsonify({ 'token': token.decode('ascii') }), 201
+        token = user.generate_auth_token()
+        return jsonify({ 'token': token.decode('ascii') }), 201
 
     return jsonify({"Error": "Incorret credentials"}), 400
 
-    
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
